@@ -9,7 +9,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>SimpleTCP</RootNamespace>
     <AssemblyName>SimpleTCP</AssemblyName>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <TargetFrameworkProfile />
   </PropertyGroup>
@@ -51,6 +51,7 @@
     <Compile Include="SimpleTcpParam.cs" />
     <Compile Include="SimpleTcpServer.cs" />
     <Compile Include="SimpleUdpClient.cs" />
+    <Compile Include="UdpServer.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="SimpleTCP.nuspec" />

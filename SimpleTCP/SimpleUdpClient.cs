@@ -133,6 +133,7 @@ namespace SimpleTCP
         private void NotifyEndTransmissionRx(UdpClient client, byte[] msg)
         {
             if (DataReceived == null) return;
+            if (msg.Length <= 0) return;
             var m = new MessagemUdp(msg, client, Encoding.ASCII, Delimiter, false);
             DataReceived(this, m);
         }
@@ -140,7 +141,7 @@ namespace SimpleTCP
         public void Dispose()
         {
             QueueStop = false;
-            UdpClient.Close();
+            UdpClient?.Close();
             ((IDisposable)UdpClient)?.Dispose();
         }
 

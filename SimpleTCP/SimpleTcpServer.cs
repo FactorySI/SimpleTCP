@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading;
+using SimpleTCP.Server;
 
 namespace SimpleTCP
 {
@@ -201,12 +202,19 @@ namespace SimpleTCP
 
         public void Stop()
         {
-            _listeners.All(l => l.QueueStop = true);
+            _listeners?.All(l => l.QueueStop = true);
+
             while (_listeners.Any(l => l.Listener.Active))
             {
                 Thread.Sleep(100);
             };
+
             _listeners.Clear();
+        }
+
+        public List<ServerListener> GetClient()
+        {
+            return _listeners;
         }
 
         public int ConnectedClientsCount
