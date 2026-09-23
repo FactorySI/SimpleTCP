@@ -5,7 +5,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 
-namespace SimpleTCP
+namespace FactorySI.SimpleTcp
 {
     public class SimpleTcpClient : IDisposable
     {

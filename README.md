@@ -1,69 +1,116 @@
-# SimpleTCP
-Straightforward and incredibly useful .NET library to handle the repetitive tasks of spinning up and working with TCP sockets (client and server).
+# FactorySI.SimpleTcp
 
-**NuGet Package:** https://www.nuget.org/packages/SimpleTCP/
+Biblioteca .NET para comunicação TCP entre clientes e servidores, com suporte a mensagens de texto e binárias.
 
-![Build Status](https://ci.appveyor.com/api/projects/status/felx0b90mwgr4l4n?svg=true)
+| Propriedade | Valor |
+| --- | --- |
+| Package ID | `FactorySI.SimpleTcp` |
+| Assembly e namespace | `FactorySI.SimpleTcp` |
+| Versão | `2.0.0` |
+| Framework de destino | `net462` |
+| Licença | Apache-2.0 |
 
-Want a TCP server that listens on port 8910 on all the IP addresses on the machine?
+## Origem, licença e atribuição
 
-```cs
-var server = new SimpleTcpServer().Start(8910);
+`FactorySI.SimpleTcp` é um trabalho derivado de [SimpleTCP](https://github.com/BrandonPotter/SimpleTCP), de Brandon Potter. A distribuição foi renomeada, atualizada e empacotada pela FactorySI em 2026.
+
+- Autores do pacote: `BrandonPotter;FactorySI`.
+- O texto integral da licença Apache-2.0 está em [LICENSE](LICENSE).
+- As atribuições e o aviso de trabalho derivado estão em [NOTICE](NOTICE).
+
+## Instalação por feed local
+
+O pacote oficial desta entrega está disponível pelo feed local `D:\FactorySIPackageNuget`. Esta documentação não declara publicação no nuget.org.
+
+Configure `D:\FactorySIPackageNuget` como uma origem de pacote local no NuGet e instale a versão desejada. Exemplo pela CLI:
+
+```powershell
+dotnet add SeuProjeto.csproj package FactorySI.SimpleTcp --version 2.0.0 --source D:\FactorySIPackageNuget
 ```
 
-Want a TCP client that connects to 127.0.0.1 on port 8910?
+Também é possível adicionar essa pasta em **Ferramentas > Gerenciador de Pacotes NuGet > Origens de Pacotes** no Visual Studio e instalar `FactorySI.SimpleTcp` pela interface.
 
-```cs
-var client = new SimpleTcpClient().Connect("127.0.0.1", 8910);
+## Exemplo mínimo
+
+Use o namespace da distribuição FactorySI:
+
+```csharp
+using FactorySI.SimpleTcp;
 ```
 
-Want to send "Hello world!" to the server and get the reply that it sends within 3 seconds?
+Servidor que inicia a escuta na porta `8910` e responde a mensagens delimitadas:
 
-```cs
-var replyMsg = client.WriteLineAndGetReply("Hello world!", TimeSpan.FromSeconds(3));
+```csharp
+using FactorySI.SimpleTcp;
+
+var servidor = new SimpleTcpServer();
+servidor.Delimiter = 0x13;
+servidor.DelimiterDataReceived += (remetente, mensagem) =>
+{
+    mensagem.ReplyLine("Mensagem recebida: " + mensagem.MessageString);
+};
+
+servidor.Start(8910);
 ```
 
-Want to receive a message event on the server each time you see a newline \n (char 13), and echo back any messages that come in?
+Cliente que se conecta ao servidor e aguarda uma resposta:
 
-```cs
-server.Delimiter = 0x13;
-server.DelimiterDataReceived += (sender, msg) => {
-                msg.ReplyLine("You said: " + msg.MessageString);
-            };
+```csharp
+using FactorySI.SimpleTcp;
+
+var cliente = new SimpleTcpClient().Connect("127.0.0.1", 8910);
+var resposta = cliente.WriteLineAndGetReply("Olá", TimeSpan.FromSeconds(3));
 ```
 
-Want to know how many clients are connected to the server?
+## Migração a partir de `SimpleTCP`
 
-```cs
-int clientsConnected = server.ConnectedClientsCount;
+Esta versão tem uma mudança de identidade incompatível com a distribuição anterior. Atualize todos os pontos abaixo:
+
+| Identidade anterior | Nova identidade |
+| --- | --- |
+| Package ID `SimpleTCP` | Package ID `FactorySI.SimpleTcp` |
+| Assembly `SimpleTCP` | Assembly `FactorySI.SimpleTcp` |
+| `using SimpleTCP;` | `using FactorySI.SimpleTcp;` |
+
+Os nomes públicos `SimpleTcpServer` e `SimpleTcpClient` foram mantidos. Ainda assim, a troca de pacote, assembly e namespace exige recompilação dos projetos consumidores.
+
+## Recebimento e eventos
+
+O recebimento é assíncrono por cliente conectado:
+
+- eventos originados por **clientes diferentes** podem ser executados em paralelo;
+- eventos do **mesmo cliente** permanecem sequenciais;
+- em protocolos delimitados, concentre o processamento da regra de negócio em `DelimiterDataReceived`;
+- não duplique a mesma regra em `DataReceived`, pois isso pode processar uma mensagem delimitada duas vezes.
+
+O delimitador padrão existente é `0x13` (decimal `19`). Ele não corresponde a newline nem ao caractere decimal `13`. Configure `Delimiter` explicitamente quando o protocolo utilizar outro terminador e garanta que cliente e servidor adotem a mesma convenção.
+
+## Configurações relevantes para estabilidade
+
+- `Delimiter`: define o byte que encerra uma mensagem delimitada.
+- `MaxDelimiterMessageLength`: limita o tamanho de mensagens delimitadas e deve ser ajustado ao maior tamanho legítimo previsto pelo protocolo.
+- `WriteTimeout`: estabelece o limite de tempo para operações de escrita; configure-o de acordo com a latência e a disponibilidade esperadas da conexão.
+
+Essas configurações devem ser definidas de forma compatível entre os participantes do protocolo e validadas em condições de operação representativas, especialmente quando houver mensagens grandes ou redes instáveis.
+
+## Build e testes
+
+Os projetos têm como destino `net462`. É necessário um ambiente de desenvolvimento compatível com esse framework para compilar e testar a solução.
+
+```powershell
+# Compilar a solução em Debug
+dotnet build .\FactorySI.SimpleTcp.sln --configuration Debug
+
+# Executar os testes
+dotnet test .\FactorySI.SimpleTcp.sln --configuration Debug
 ```
 
-Want to change the text encoding that the client and server uses when sending and receiving strings? (The default is ASCII/UTF8.)
+O build em `Release` está configurado para gerar o pacote. A geração falha se já existir na pasta de saída um pacote com o mesmo ID e versão; nesse caso, não sobrescreva o artefato existente sem a decisão de versionamento apropriada.
 
-```cs
-server.StringEncoder = System.Text.ASCIIEncoding.ASCII;
-client.StringEncoder = System.Text.ASCIIEncoding.ASCII;
+```powershell
+dotnet build .\FactorySI.SimpleTcp.sln --configuration Release
 ```
 
-Want to get the IP addresses that the server is listening on?
+## Limitações
 
-```cs
-var listeningIps = server.GetListeningIPs();
-```
-
-Want to get only the IPv4 addresses the server is listening on?
-
-```cs
-var listeningV4Ips = server.GetListeningIPs().Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
-```
-
-Want to make your node.js friends stop saying things like "with node I can spin up a web server in only 4 lines of code"?
-
-```cs
-var server = new SimpleTcpServer().Start(80);
-server.DataReceived += (sender, msg) => {
-                msg.Reply("Content-Type: text/plain\n\nHello from my web server!"); 
-                };
-```
-
-(But really, this library isn't ideal for web server-ing, so don't do that in prod.)
+Esta biblioteca não substitui um servidor HTTP ou uma plataforma de hospedagem web para uso em produção. Projetos que dependem de protocolos próprios devem definir e testar explicitamente enquadramento de mensagens, delimitador, tamanhos máximos, timeouts e tratamento de desconexões.

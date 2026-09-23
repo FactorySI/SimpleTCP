@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <RootNamespace>FactorySI.SimpleTcp</RootNamespace>
+    <AssemblyName>FactorySI.SimpleTcp</AssemblyName>
+    <Version>2.0.0</Version>
+    <PackageId>FactorySI.SimpleTcp</PackageId>
+    <Title>FactorySI.SimpleTcp</Title>
+    <Authors>BrandonPotter;FactorySI</Authors>
+    <Company>FactorySI</Company>
+    <Copyright>Copyright © 2015 Brandon Potter. Modificações © 2026 FactorySI.</Copyright>
+    <Description>Biblioteca .NET para comunicação TCP cliente e servidor com mensagens de texto e binárias.</Description>
+    <PackageTags>tcp;socket;cliente;servidor;SimpleTCP</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/BrandonPotter/SimpleTCP</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageOutputPath>D:\FactorySIPackageNuget</PackageOutputPath>
+    <IsPackable>true</IsPackable>
+    <GeneratePackageOnBuild Condition="'$(Configuration)' == 'Release'">true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\NOTICE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="FalharSePacoteDaMesmaVersaoExistir" BeforeTargets="GenerateNuspec">
+    <Error
+      Condition="Exists('$(PackageOutputPath)\$(PackageId).$(Version).nupkg')"
+      Text="O pacote '$(PackageId)' na versão '$(Version)' já existe em '$(PackageOutputPath)'. Altere a versão antes de gerar um novo pacote." />
+  </Target>
+</Project>

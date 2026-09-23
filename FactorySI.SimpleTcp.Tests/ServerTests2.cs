@@ -3,7 +3,7 @@ using System.Linq;
 using System.Net;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
 	[TestClass]
 	public class ServerTests2

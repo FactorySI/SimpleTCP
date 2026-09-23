@@ -1,7 +1,7 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 
-namespace SimpleTCP
+namespace FactorySI.SimpleTcp
 {
     public class ConnectedClient
     {

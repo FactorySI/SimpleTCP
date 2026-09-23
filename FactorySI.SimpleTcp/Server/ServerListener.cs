@@ -6,7 +6,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SimpleTCP.Server
+namespace FactorySI.SimpleTcp.Server
 {
     /// <summary>
     /// Mantém a escuta de um endereço TCP e o ciclo de leitura independente de cada cliente aceito.

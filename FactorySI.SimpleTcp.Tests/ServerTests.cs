@@ -9,7 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
 	[TestClass]
 	public class ServerTests : IDisposable
@@ -78,7 +78,7 @@ namespace SimpleTCP.Tests
 	}
 }
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
     [TestClass]
     public class ServerWritingTests
@@ -236,7 +236,7 @@ namespace SimpleTCP.Tests
     }
 }
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
     [TestClass]
     public class ServerAsyncLifecycleTests
@@ -501,7 +501,7 @@ namespace SimpleTCP.Tests
     }
 }
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
     [TestClass]
     public class ServerMessageReceptionTests
@@ -626,7 +626,7 @@ namespace SimpleTCP.Tests
 
             try
             {
-                List<SimpleTCP.Server.ServerListener> listeners = servidor.GetClient();
+                List<FactorySI.SimpleTcp.Server.ServerListener> listeners = servidor.GetClient();
                 listeners.Clear();
 
                 Assert.AreEqual(1, servidor.GetClient().Count, "A alteração da lista retornada não deve alterar os listeners internos do servidor.");

@@ -4,9 +4,9 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using SimpleTCP.Server;
+using FactorySI.SimpleTcp.Server;
 
-namespace SimpleTCP
+namespace FactorySI.SimpleTcp
 {
     public class SimpleTcpServer
     {

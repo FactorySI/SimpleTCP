@@ -5,7 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace SimpleTCP.Tests
+namespace FactorySI.SimpleTcp.Tests
 {
     [TestClass]
     public class CommTest
