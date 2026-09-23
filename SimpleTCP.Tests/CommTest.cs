@@ -1,77 +1,100 @@
-﻿using System;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace SimpleTCP.Tests
 {
     [TestClass]
     public class CommTest
     {
-        private List<string> _clientTx = new List<string>();
-        private List<string> _clientRx = new List<string>();
-        private List<string> _serverRx = new List<string>();
-        private List<string> _serverTx = new List<string>();
-
-
         [TestMethod]
         public void SimpleCommTest()
         {
-            SimpleTcpServer server = new SimpleTcpServer().Start(8910);
-            SimpleTcpClient client = new SimpleTcpClient(new SimpleTcpParam{Name = "Alex"}).Connect(server.GetListeningIPs().FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork).ToString(), 8910);
+            var mensagensClienteEnviadas = new List<string>();
+            var mensagensClienteRecebidas = new List<string>();
+            var mensagensServidorRecebidas = new List<string>();
+            var mensagensServidorEnviadas = new List<string>();
+            var mensagensServidorRecebidasEvent = new ManualResetEvent(false);
+            var mensagensClienteRecebidasEvent = new ManualResetEvent(false);
+            var clienteConectadoEvent = new ManualResetEvent(false);
+            var porta = ObterPortaDisponivel();
+            var servidor = new SimpleTcpServer().Start(IPAddress.Loopback, porta);
+            SimpleTcpClient cliente = null;
 
-            server.DelimiterDataReceived += (sender, msg) =>
+            try
             {
-                _serverRx.Add(msg.MessageString);
-                string serverReply = Guid.NewGuid().ToString();
-                msg.ReplyLine(serverReply);
-                _serverTx.Add(serverReply);
-            };
-
-            client.DelimiterDataReceived += (sender, msg) =>
-            {
-                _clientRx.Add(msg.MessageString);
-            };
-
-            System.Threading.Thread.Sleep(1000);
-
-            if (server.ConnectedClientsCount == 0)
-            {
-                Assert.Fail("Server did not register connected client");
-            }
-
-            for (int i = 0; i < 10; i++)
-            {
-                string clientTxMsg = Guid.NewGuid().ToString();
-                _clientTx.Add(clientTxMsg);
-                client.WriteLine(clientTxMsg);
-                System.Threading.Thread.Sleep(100);
-            }
-
-            System.Threading.Thread.Sleep(1000);
-
-            for (int i = 0; i < 10; i++)
-            {
-                if (_clientTx[i] != _serverRx[i])
+                servidor.ClientConnected += (sender, tcpClient) => clienteConectadoEvent.Set();
+                servidor.DelimiterDataReceived += (sender, mensagem) =>
                 {
-                    Assert.Fail("Client TX " + i.ToString() + " did not match server RX " + i.ToString());
+                    lock (mensagensServidorRecebidas)
+                    {
+                        mensagensServidorRecebidas.Add(mensagem.MessageString);
+                        mensagensServidorEnviadas.Add(mensagem.MessageString);
+
+                        if (mensagensServidorRecebidas.Count == 10)
+                        {
+                            mensagensServidorRecebidasEvent.Set();
+                        }
+                    }
+
+                    mensagem.ReplyLine(mensagem.MessageString);
+                };
+
+                cliente = new SimpleTcpClient(new SimpleTcpParam { Name = "Teste" }).Connect(IPAddress.Loopback.ToString(), porta);
+                cliente.DelimiterDataReceived += (sender, mensagem) =>
+                {
+                    lock (mensagensClienteRecebidas)
+                    {
+                        mensagensClienteRecebidas.Add(mensagem.MessageString);
+                        if (mensagensClienteRecebidas.Count == 10)
+                        {
+                            mensagensClienteRecebidasEvent.Set();
+                        }
+                    }
+                };
+
+                Assert.IsTrue(clienteConectadoEvent.WaitOne(TimeSpan.FromSeconds(5)), "O servidor não registrou a conexão do cliente.");
+
+                for (var indice = 0; indice < 10; indice++)
+                {
+                    var mensagem = Guid.NewGuid().ToString();
+                    mensagensClienteEnviadas.Add(mensagem);
+                    cliente.WriteLine(mensagem);
                 }
 
-                if (_serverTx[i] != _clientRx[i])
-                {
-                    Assert.Fail("Client RX " + i.ToString() + " did not match server TX " + i.ToString());
-                }
-            }
+                Assert.IsTrue(mensagensServidorRecebidasEvent.WaitOne(TimeSpan.FromSeconds(5)), "O servidor não recebeu todas as mensagens do cliente.");
+                Assert.IsTrue(mensagensClienteRecebidasEvent.WaitOne(TimeSpan.FromSeconds(5)), "O cliente não recebeu todas as respostas do servidor.");
 
-            var reply = client.WriteLineAndGetReply("TEST", TimeSpan.FromSeconds(1));
-            if (reply == null)
+                CollectionAssert.AreEqual(mensagensClienteEnviadas, mensagensServidorRecebidas);
+                CollectionAssert.AreEqual(mensagensServidorEnviadas, mensagensClienteRecebidas);
+
+                var resposta = cliente.WriteLineAndGetReply("TESTE", TimeSpan.FromSeconds(1));
+                Assert.IsNotNull(resposta, "WriteLineAndGetReply não deveria retornar nulo.");
+            }
+            finally
             {
-                Assert.Fail("WriteLineAndGetReply returned null");
+                if (cliente != null)
+                {
+                    cliente.Dispose();
+                }
+
+                servidor.Stop();
+                mensagensServidorRecebidasEvent.Close();
+                mensagensClienteRecebidasEvent.Close();
+                clienteConectadoEvent.Close();
             }
+        }
 
-            Assert.IsTrue(true);
-
-
+        private static int ObterPortaDisponivel()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var porta = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return porta;
         }
     }
 }

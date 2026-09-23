@@ -8,26 +8,66 @@ namespace SimpleTCP.Tests
 	[TestClass]
 	public class ServerTests2
 	{
-		readonly int _serverPort = 8911;
-
 		[TestMethod]
 		public void Start_passes_if_at_all_nics_passed()
 		{
-			var server = new SimpleTcpServer().Start(_serverPort, false);
-			Assert.IsTrue(server.IsStarted, "Server should have started");
-			server.Stop();
+			var server = new SimpleTcpServer().Start(ObterPortaDisponivel(), false);
+			try
+			{
+				Assert.IsTrue(server.IsStarted, "O servidor deveria ter sido iniciado.");
+			}
+			finally
+			{
+				server.Stop();
+			}
 		}
 
 		[TestMethod]
 		public void Start_passes_if_at_least_one_nic_is_free()
 		{
-			var listener = new System.Net.Sockets.TcpListener(new IPAddress(new byte[] { 127, 0, 0, 1 }), _serverPort);
+			var porta = ObterPortaDisponivel();
+			var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, porta);
+			listener.Start();
+			SimpleTcpServer server = null;
+			try
+			{
+				server = new SimpleTcpServer().Start(porta);
+				Assert.IsTrue(server.IsStarted, "O servidor deveria ter iniciado nas interfaces livres.");
+			}
+			finally
+			{
+				if (server != null)
+				{
+					server.Stop();
+				}
+
+				listener.Stop();
+			}
+		}
+
+		[TestMethod]
+		public void Start_fails_if_at_all_nics_free_is_required()
+		{
+			var porta = ObterPortaDisponivel();
+			var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, porta);
 			listener.Start();
 			try
 			{
-				var server = new SimpleTcpServer().Start(_serverPort);
-				Assert.IsTrue(server.IsStarted, "Server should have started on free nics");
-				server.Stop();
+				Assert.ThrowsExactly<InvalidOperationException>(() =>
+				{
+					SimpleTcpServer server = null;
+					try
+					{
+						server = new SimpleTcpServer().Start(porta, false);
+					}
+					finally
+					{
+						if (server != null)
+						{
+							server.Stop();
+						}
+					}
+				});
 			}
 			finally
 			{
@@ -35,22 +75,13 @@ namespace SimpleTCP.Tests
 			}
 		}
 
-		[TestMethod]
-		[ExpectedException(typeof(InvalidOperationException))]
-		public void Start_fails_if_at_all_nics_free_is_required()
+		private static int ObterPortaDisponivel()
 		{
-			var listener = new System.Net.Sockets.TcpListener(new IPAddress(new byte[] { 127, 0, 0, 1 }), _serverPort);
+			var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
 			listener.Start();
-			try
-			{
-				var server = new SimpleTcpServer().Start(_serverPort, false);
-				Assert.IsTrue(server.IsStarted, "Server should have started on free nics");
-				server.Stop();
-			}
-			finally
-			{
-				listener.Stop();
-			}
+			var porta = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+			listener.Stop();
+			return porta;
 		}
 	}
 }

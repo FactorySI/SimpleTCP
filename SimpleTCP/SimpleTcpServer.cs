@@ -4,7 +4,6 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Threading;
 using SimpleTCP.Server;
 
 namespace SimpleTCP
@@ -17,10 +16,50 @@ namespace SimpleTCP
             StringEncoder = System.Text.Encoding.UTF8;
         }
 
-        private List<Server.ServerListener> _listeners = new List<Server.ServerListener>();
+        private readonly object _listenersLock = new object();
+        private readonly List<Server.ServerListener> _listeners = new List<Server.ServerListener>();
+        private const int DEFAULT_MAX_DELIMITER_MESSAGE_LENGTH = 1024 * 1024;
+        private int _maxDelimiterMessageLength = DEFAULT_MAX_DELIMITER_MESSAGE_LENGTH;
+        private int _writeTimeout;
         public byte Delimiter { get; set; }
         public System.Text.Encoding StringEncoder { get; set; }
         public bool AutoTrimStrings { get; set; }
+
+        /// <summary>
+        /// Obtém ou define o tempo máximo, em milissegundos, para uma escrita síncrona em clientes aceitos pelo servidor.
+        /// O valor padrão é zero, que mantém o tempo limite infinito.
+        /// </summary>
+        public int WriteTimeout
+        {
+            get { return _writeTimeout; }
+            set
+            {
+                if (value < 0)
+                {
+                    throw new ArgumentOutOfRangeException("value", "O tempo limite de escrita deve ser maior ou igual a zero.");
+                }
+
+                _writeTimeout = value;
+            }
+        }
+
+        /// <summary>
+        /// Obtém ou define a quantidade máxima de bytes aceitos em uma mensagem sem delimitador.
+        /// O valor padrão é 1 MiB. Clientes que excederem esse limite serão desconectados.
+        /// </summary>
+        public int MaxDelimiterMessageLength
+        {
+            get { return _maxDelimiterMessageLength; }
+            set
+            {
+                if (value <= 0)
+                {
+                    throw new ArgumentOutOfRangeException("value", "O limite máximo de mensagem delimitada deve ser maior que zero.");
+                }
+
+                _maxDelimiterMessageLength = value;
+            }
+        }
 
         public event EventHandler<TcpClient> ClientConnected;
         public event EventHandler<TcpClient> ClientDisconnected;
@@ -53,7 +92,7 @@ namespace SimpleTCP
         public List<IPAddress> GetListeningIPs()
         {
             List<IPAddress> listenIps = new List<IPAddress>();
-            foreach (var l in _listeners)
+            foreach (var l in GetListenersSnapshot())
             {
                 if (!listenIps.Contains(l.IPAddress))
                 {
@@ -66,9 +105,24 @@ namespace SimpleTCP
 
         public void Broadcast(byte[] data)
         {
-            foreach (var client in _listeners.SelectMany(x => x.ConnectedClients))
+            if (data == null)
             {
-                client.GetStream().Write(data, 0, data.Length);
+                throw new ArgumentNullException("data");
+            }
+
+            foreach (var listener in GetListenersSnapshot())
+            {
+                foreach (var client in listener.ConnectedClients)
+                {
+                    try
+                    {
+                        listener.WriteToClient(client, data);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Trace.TraceError("Falha ao transmitir dados para um cliente TCP: " + ex);
+                    }
+                }
             }
         }
 
@@ -190,38 +244,52 @@ namespace SimpleTCP
             return this;
         }
 
-        public bool IsStarted { get { return _listeners.Any(l => l.Listener.Active); } }
+        public bool IsStarted { get { return GetListenersSnapshot().Any(l => l.Listener.Active); } }
 
         public SimpleTcpServer Start(IPAddress ipAddress, int port)
         {
-            Server.ServerListener listener = new Server.ServerListener(this, ipAddress, port);
-            _listeners.Add(listener);
+            lock (_listenersLock)
+            {
+                Server.ServerListener listener = new Server.ServerListener(this, ipAddress, port);
+                _listeners.Add(listener);
+            }
 
             return this;
         }
 
         public void Stop()
         {
-            _listeners?.All(l => l.QueueStop = true);
-
-            while (_listeners.Any(l => l.Listener.Active))
+            List<ServerListener> listeners;
+            lock (_listenersLock)
             {
-                Thread.Sleep(100);
-            };
+                listeners = new List<ServerListener>(_listeners);
+                _listeners.Clear();
+            }
 
-            _listeners.Clear();
+            foreach (var listener in listeners)
+            {
+                listener.RequestStop();
+            }
         }
 
         public List<ServerListener> GetClient()
         {
-            return _listeners;
+            return GetListenersSnapshot();
         }
 
         public int ConnectedClientsCount
         {
             get
             {
-                return _listeners.Sum(l => l.ConnectedClientsCount);
+                return GetListenersSnapshot().Sum(l => l.ConnectedClientsCount);
+            }
+        }
+
+        private List<ServerListener> GetListenersSnapshot()
+        {
+            lock (_listenersLock)
+            {
+                return new List<ServerListener>(_listeners);
             }
         }
 
@@ -229,7 +297,7 @@ namespace SimpleTCP
         {
             if (DelimiterDataReceived != null)
             {
-                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
+                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings, data => listener.WriteToClient(client, data));
                 DelimiterDataReceived(this, m);
             }
         }
@@ -239,7 +307,7 @@ namespace SimpleTCP
         {
             if (DataReceived != null)
             {
-                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
+                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings, data => listener.WriteToClient(client, data));
                 DataReceived(this, m);
             }
         }

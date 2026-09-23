@@ -1,151 +1,356 @@
-﻿using System.Collections.Generic;
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace SimpleTCP.Server
 {
+    /// <summary>
+    /// Mantém a escuta de um endereço TCP e o ciclo de leitura independente de cada cliente aceito.
+    /// </summary>
     public class ServerListener
     {
-        private TcpListenerEx _listener = null;
-        private List<TcpClient> _connectedClients = new List<TcpClient>();
-        private List<TcpClient> _disconnectedClients = new List<TcpClient>();
-        private SimpleTcpServer _parent = null;
-        private List<byte> _queuedMsg = new List<byte>();
-        private byte _delimiter = 0x13;
-        private Thread _rxThread = null;
+        private const int MAXIMUM_RECEIVE_BUFFER_SIZE = 8192;
+
+        private readonly TcpListenerEx _listener;
+        private readonly List<TcpClient> _connectedClients = new List<TcpClient>();
+        private readonly Dictionary<TcpClient, object> _writeLocks = new Dictionary<TcpClient, object>();
+        private readonly SimpleTcpServer _parent;
+        private readonly object _clientsLock = new object();
+        private readonly CancellationTokenSource _stopCancellationTokenSource = new CancellationTokenSource();
+        private bool _stopRequested;
 
         public int ConnectedClientsCount
         {
-            get { return _connectedClients.Count; }
+            get
+            {
+                lock (_clientsLock)
+                {
+                    return _connectedClients.Count;
+                }
+            }
         }
 
-        public IEnumerable<TcpClient> ConnectedClients { get { return _connectedClients; } }
+        public IEnumerable<TcpClient> ConnectedClients
+        {
+            get
+            {
+                lock (_clientsLock)
+                {
+                    return _connectedClients.ToArray();
+                }
+            }
+        }
 
         internal ServerListener(SimpleTcpServer parentServer, IPAddress ipAddress, int port)
         {
-            QueueStop = false;
             _parent = parentServer;
             IPAddress = ipAddress;
             Port = port;
-            ReadLoopIntervalMs = 10;
-
             _listener = new TcpListenerEx(ipAddress, port);
             _listener.Start();
 
-            System.Threading.ThreadPool.QueueUserWorkItem(ListenerLoop);
+            Task acceptLoopTask = AcceptConnectionsAsync();
+            if (acceptLoopTask.IsFaulted)
+            {
+                System.Diagnostics.Trace.TraceError("Falha ao iniciar a escuta assíncrona do servidor TCP: " + acceptLoopTask.Exception);
+            }
         }
 
-        private void StartThread()
-        {
-            if (_rxThread != null) { return; }
-            _rxThread = new Thread(ListenerLoop);
-            _rxThread.IsBackground = true;
-            _rxThread.Start();
-        }
-
-        internal bool QueueStop { get; set; }
         internal IPAddress IPAddress { get; private set; }
+
         internal int Port { get; private set; }
-        internal int ReadLoopIntervalMs { get; set; }
 
         internal TcpListenerEx Listener { get { return _listener; } }
 
-
-
-        private void ListenerLoop(object state)
+        /// <summary>
+        /// Solicita a interrupção da escuta e fecha todos os clientes aceitos sem aguardar os loops de leitura.
+        /// </summary>
+        internal void RequestStop()
         {
-            while (!QueueStop)
+            TcpClient[] clients;
+
+            lock (_clientsLock)
             {
-                try
+                if (_stopRequested)
                 {
-                    RunLoopStep();
-                }
-                catch
-                {
-
+                    return;
                 }
 
-                System.Threading.Thread.Sleep(ReadLoopIntervalMs);
+                _stopRequested = true;
+                clients = _connectedClients.ToArray();
             }
-            _listener.Stop();
+
+            _stopCancellationTokenSource.Cancel();
+
+            try
+            {
+                _listener.Stop();
+            }
+            catch (SocketException ex)
+            {
+                System.Diagnostics.Trace.TraceError("Falha ao interromper a escuta do servidor TCP: " + ex);
+            }
+            catch (ObjectDisposedException ex)
+            {
+                System.Diagnostics.Trace.TraceError("A escuta do servidor TCP já estava descartada: " + ex);
+            }
+
+            foreach (TcpClient client in clients)
+            {
+                FecharCliente(client, false);
+            }
         }
 
-
-        bool IsSocketConnected(Socket s)
+        private async Task AcceptConnectionsAsync()
         {
-            // https://stackoverflow.com/questions/2661764/how-to-check-if-a-socket-is-connected-disconnected-in-c
-            bool part1 = s.Poll(1000, SelectMode.SelectRead);
-            bool part2 = (s.Available == 0);
-            if ((part1 && part2) || !s.Connected)
-                return false;
-            else
-                return true;
+            try
+            {
+                while (!_stopCancellationTokenSource.IsCancellationRequested)
+                {
+                    TcpClient client;
+
+                    try
+                    {
+                        client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
+                    }
+                    catch (ObjectDisposedException) when (_stopCancellationTokenSource.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (SocketException) when (_stopCancellationTokenSource.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    client.SendTimeout = _parent.WriteTimeout;
+                    if (!RegistrarCliente(client))
+                    {
+                        client.Close();
+                        continue;
+                    }
+
+                    try
+                    {
+                        _parent.NotifyClientConnected(this, client);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Trace.TraceError("Falha no evento de conexão do cliente TCP: " + ex);
+                    }
+
+                    if (ClienteEstaConectado(client) && !_stopCancellationTokenSource.IsCancellationRequested)
+                    {
+                        Task clientReadTask = ReadClientAsync(client, _stopCancellationTokenSource.Token);
+                        if (clientReadTask.IsFaulted)
+                        {
+                            System.Diagnostics.Trace.TraceError("Falha ao iniciar a leitura assíncrona de um cliente TCP: " + clientReadTask.Exception);
+                        }
+                    }
+                }
+            }
+            catch (ObjectDisposedException) when (_stopCancellationTokenSource.IsCancellationRequested)
+            {
+            }
+            catch (SocketException ex)
+            {
+                if (!_stopCancellationTokenSource.IsCancellationRequested)
+                {
+                    System.Diagnostics.Trace.TraceError("Falha na escuta assíncrona do servidor TCP: " + ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.TraceError("Falha inesperada na escuta assíncrona do servidor TCP: " + ex);
+            }
         }
 
-
-        private void RunLoopStep()
+        private async Task ReadClientAsync(TcpClient client, CancellationToken cancellationToken)
         {
-            if (_disconnectedClients.Count > 0)
-            {
-                var disconnectedClients = _disconnectedClients.ToArray();
-                _disconnectedClients.Clear();
+            byte[] receiveBuffer = new byte[MAXIMUM_RECEIVE_BUFFER_SIZE];
+            List<byte> delimiterMessageBuffer = new List<byte>();
 
-                foreach (var disC in disconnectedClients)
+            try
+            {
+                NetworkStream stream = client.GetStream();
+
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    _connectedClients.Remove(disC);
-                    _parent.NotifyClientDisconnected(this, disC);
+                    int bytesRead = await stream.ReadAsync(receiveBuffer, 0, receiveBuffer.Length, cancellationToken).ConfigureAwait(false);
+                    if (bytesRead == 0)
+                    {
+                        FecharCliente(client, true);
+                        return;
+                    }
+
+                    try
+                    {
+                        if (!ProcessReceivedData(client, receiveBuffer, bytesRead, delimiterMessageBuffer, cancellationToken))
+                        {
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Trace.TraceError("Falha no processamento dos dados de um cliente TCP: " + ex);
+                    }
                 }
             }
-
-            if (_listener.Pending())
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                var newClient = _listener.AcceptTcpClient();
-                _connectedClients.Add(newClient);
-                _parent.NotifyClientConnected(this, newClient);
             }
-
-            _delimiter = _parent.Delimiter;
-
-            foreach (var c in _connectedClients)
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
             {
-
-                if (IsSocketConnected(c.Client) == false)
+            }
+            catch (IOException ex)
+            {
+                if (!cancellationToken.IsCancellationRequested)
                 {
-                    _disconnectedClients.Add(c);
+                    System.Diagnostics.Trace.TraceError("Falha na leitura de dados de um cliente TCP: " + ex);
+                    FecharCliente(client, true);
+                }
+            }
+            catch (SocketException ex)
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    System.Diagnostics.Trace.TraceError("Falha na comunicação com cliente TCP: " + ex);
+                    FecharCliente(client, true);
+                }
+            }
+            catch (ObjectDisposedException ex)
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    System.Diagnostics.Trace.TraceError("Cliente TCP já estava descartado: " + ex);
+                    FecharCliente(client, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.TraceError("Falha inesperada na leitura de um cliente TCP: " + ex);
+                FecharCliente(client, true);
+            }
+        }
+
+        private bool ProcessReceivedData(
+            TcpClient client,
+            byte[] receiveBuffer,
+            int bytesRead,
+            List<byte> delimiterMessageBuffer,
+            CancellationToken cancellationToken)
+        {
+            byte delimiter = _parent.Delimiter;
+
+            for (int index = 0; index < bytesRead; index++)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
                 }
 
-                int bytesAvailable = c.Available;
-                if (bytesAvailable == 0)
+                byte receivedByte = receiveBuffer[index];
+                if (receivedByte == delimiter)
                 {
-                    Thread.Sleep(10);
+                    byte[] message = delimiterMessageBuffer.ToArray();
+                    delimiterMessageBuffer.Clear();
+                    _parent.NotifyDelimiterMessageRx(this, client, message);
                     continue;
                 }
 
-                List<byte> bytesReceived = new List<byte>();
-
-                while (c.Available > 0 && c.Connected)
+                delimiterMessageBuffer.Add(receivedByte);
+                if (delimiterMessageBuffer.Count > _parent.MaxDelimiterMessageLength)
                 {
-                    byte[] nextByte = new byte[1];
-                    c.Client.Receive(nextByte, 0, 1, SocketFlags.None);
-                    bytesReceived.AddRange(nextByte);
+                    System.Diagnostics.Trace.TraceError("Cliente TCP desconectado por exceder o limite de mensagem delimitada.");
+                    FecharCliente(client, true);
+                    return false;
+                }
+            }
 
-                    if (nextByte[0] == _delimiter)
-                    {
-                        byte[] msg = _queuedMsg.ToArray();
-                        _queuedMsg.Clear();
-                        _parent.NotifyDelimiterMessageRx(this, c, msg);
-                    }
-                    else
-                    {
-                        _queuedMsg.AddRange(nextByte);
-                    }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            byte[] dataReceived = new byte[bytesRead];
+            Array.Copy(receiveBuffer, dataReceived, bytesRead);
+            _parent.NotifyEndTransmissionRx(this, client, dataReceived);
+            return true;
+        }
+
+        private bool RegistrarCliente(TcpClient client)
+        {
+            lock (_clientsLock)
+            {
+                if (_stopRequested)
+                {
+                    return false;
                 }
 
-                if (bytesReceived.Count > 0)
+                _connectedClients.Add(client);
+                _writeLocks.Add(client, new object());
+                return true;
+            }
+        }
+
+        private bool ClienteEstaConectado(TcpClient client)
+        {
+            lock (_clientsLock)
+            {
+                return _writeLocks.ContainsKey(client);
+            }
+        }
+
+        private void FecharCliente(TcpClient client, bool notifyDisconnection)
+        {
+            bool shouldNotifyDisconnection;
+
+            lock (_clientsLock)
+            {
+                if (!_connectedClients.Remove(client))
                 {
-                    _parent.NotifyEndTransmissionRx(this, c, bytesReceived.ToArray());
+                    return;
                 }
+
+                _writeLocks.Remove(client);
+                shouldNotifyDisconnection = notifyDisconnection && !_stopRequested;
+            }
+
+            try
+            {
+                if (shouldNotifyDisconnection)
+                {
+                    _parent.NotifyClientDisconnected(this, client);
+                }
+            }
+            finally
+            {
+                client.Close();
+            }
+        }
+
+        internal void WriteToClient(TcpClient client, byte[] data)
+        {
+            if (data == null)
+            {
+                throw new ArgumentNullException("data");
+            }
+
+            object writeLock;
+            lock (_clientsLock)
+            {
+                if (!_writeLocks.TryGetValue(client, out writeLock))
+                {
+                    throw new InvalidOperationException("O cliente TCP não está mais conectado ao servidor.");
+                }
+            }
+
+            lock (writeLock)
+            {
+                client.GetStream().Write(data, 0, data.Length);
             }
         }
     }
