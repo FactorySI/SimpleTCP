@@ -18,6 +18,8 @@ namespace FactorySI.SimpleTcp
 
         private readonly SimpleTcpParam _param;
         private readonly object _stateLock = new object();
+        private readonly SemaphoreSlim _writeLineAndGetReplySemaphore = new SemaphoreSlim(1, 1);
+        private event EventHandler<TcpClient> SessaoEncerrada;
         private string _hostNameOrIpAddress;
         private int _port;
         private TcpClient _client;
@@ -234,6 +236,7 @@ namespace FactorySI.SimpleTcp
 
         /// <summary>
         /// Envia uma linha e, se não houver resposta no tempo informado, reconecta usando o último host e porta conectados.
+        /// A requisição não é reenviada após a reconexão, pois uma resposta ausente pode significar que a operação remota foi executada.
         /// </summary>
         public SimpleTcpClient ReconnectWriteLineAndGetReply(string data, TimeSpan timeout)
         {
@@ -255,6 +258,7 @@ namespace FactorySI.SimpleTcp
 
         /// <summary>
         /// Envia bytes e, se não houver resposta no tempo informado, reconecta usando o último host e porta conectados.
+        /// A requisição não é reenviada após a reconexão, pois uma resposta ausente pode significar que a operação remota foi executada.
         /// </summary>
         public SimpleTcpClient ReconnectWriteLineAndGetReply(byte[] data, TimeSpan timeout)
         {
@@ -296,6 +300,7 @@ namespace FactorySI.SimpleTcp
             }
 
             CancelAndClose(client, cancellationTokenSource);
+            NotificarSessaoEncerrada(client);
             if (!ReferenceEquals(connectingClient, client))
             {
                 CloseClient(connectingClient);
@@ -434,13 +439,17 @@ namespace FactorySI.SimpleTcp
                 return;
             }
 
-            try
+            Message mensagem = new Message(message, client, StringEncoder, Delimiter, AutoTrimStrings, data => WriteToSession(client, writeLock, data));
+            foreach (EventHandler<Message> assinante in handler.GetInvocationList())
             {
-                handler(this, new Message(message, client, StringEncoder, Delimiter, AutoTrimStrings, data => WriteToSession(client, writeLock, data)));
-            }
-            catch (Exception ex)
-            {
-                Trace.TraceError("Falha no evento de mensagem delimitada do cliente TCP: " + ex);
+                try
+                {
+                    assinante(this, mensagem);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Falha no assinante do evento de mensagem delimitada do cliente TCP: " + ex);
+                }
             }
         }
 
@@ -452,13 +461,17 @@ namespace FactorySI.SimpleTcp
                 return;
             }
 
-            try
+            Message mensagem = new Message(message, client, StringEncoder, Delimiter, AutoTrimStrings, data => WriteToSession(client, writeLock, data));
+            foreach (EventHandler<Message> assinante in handler.GetInvocationList())
             {
-                handler(this, new Message(message, client, StringEncoder, Delimiter, AutoTrimStrings, data => WriteToSession(client, writeLock, data)));
-            }
-            catch (Exception ex)
-            {
-                Trace.TraceError("Falha no evento de dados recebidos do cliente TCP: " + ex);
+                try
+                {
+                    assinante(this, mensagem);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Falha no assinante do evento de dados recebidos do cliente TCP: " + ex);
+                }
             }
         }
 
@@ -527,41 +540,228 @@ namespace FactorySI.SimpleTcp
         }
 
         /// <summary>
-        /// Envia uma linha e aguarda, de forma síncrona, o próximo bloco recebido até o tempo limite informado.
+        /// Transmite os bytes informados seguidos de exatamente um delimitador.
+        /// Quando o último byte já for o delimitador, ele não será duplicado.
         /// </summary>
-        public Message WriteLineAndGetReply(string data, TimeSpan timeout)
+        public void WriteLine(byte[] data)
         {
-            Message mReply = null;
-            DataReceived += (s, e) => { mReply = e; };
-            WriteLine(data);
-
-            Stopwatch sw = new Stopwatch();
-            sw.Start();
-            while (mReply == null && sw.Elapsed < timeout)
+            if (data == null)
             {
-                Thread.Sleep(10);
+                throw new ArgumentNullException("data", "Os dados a transmitir devem ser informados.");
             }
 
-            return mReply;
+            Write(AdicionarDelimitador(data));
         }
 
         /// <summary>
-        /// Envia bytes e aguarda, de forma síncrona, o próximo bloco recebido até o tempo limite informado.
+        /// Envia uma linha e aguarda, de forma síncrona, a primeira resposta delimitada subsequente até o tempo limite informado.
+        /// Há suporte a somente uma requisição pendente por cliente. Protocolos com mensagens espontâneas devem usar correlação na aplicação.
+        /// </summary>
+        public Message WriteLineAndGetReply(string data, TimeSpan timeout)
+        {
+            return WriteLineAndGetReplyAsync(data, timeout).GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Envia bytes e aguarda, de forma síncrona, a primeira resposta delimitada subsequente até o tempo limite informado.
+        /// Há suporte a somente uma requisição pendente por cliente. Protocolos com mensagens espontâneas devem usar correlação na aplicação.
         /// </summary>
         public Message WriteLineAndGetReply(byte[] data, TimeSpan timeout)
         {
-            Message mReply = null;
-            DataReceived += (s, e) => { mReply = e; };
-            Write(data);
+            return WriteLineAndGetReplyAsync(data, timeout).GetAwaiter().GetResult();
+        }
 
-            Stopwatch sw = new Stopwatch();
-            sw.Start();
-            while (mReply == null && sw.Elapsed < timeout)
+        /// <summary>
+        /// Envia uma linha e aguarda a primeira resposta delimitada subsequente.
+        /// O tempo limite abrange a espera pela exclusividade da operação, o envio e a resposta.
+        /// São aceitos valores entre zero e <see cref="Int32.MaxValue"/> milissegundos, ou <see cref="Timeout.InfiniteTimeSpan"/>.
+        /// Há suporte a somente uma requisição pendente por cliente. Protocolos com mensagens espontâneas devem usar correlação na aplicação.
+        /// </summary>
+        public Task<Message> WriteLineAndGetReplyAsync(string data, TimeSpan timeout, CancellationToken cancellationToken = default(CancellationToken))
+        {
+            if (data == null)
             {
-                Thread.Sleep(10);
+                throw new ArgumentNullException("data", "Os dados a transmitir devem ser informados.");
             }
 
-            return mReply;
+            return WriteLineAndGetReplyInternoAsync(AdicionarDelimitador(StringEncoder.GetBytes(data)), timeout, cancellationToken);
+        }
+
+        /// <summary>
+        /// Envia bytes seguidos de exatamente um delimitador e aguarda a primeira resposta delimitada subsequente.
+        /// O tempo limite abrange a espera pela exclusividade da operação, o envio e a resposta.
+        /// São aceitos valores entre zero e <see cref="Int32.MaxValue"/> milissegundos, ou <see cref="Timeout.InfiniteTimeSpan"/>.
+        /// Há suporte a somente uma requisição pendente por cliente. Protocolos com mensagens espontâneas devem usar correlação na aplicação.
+        /// </summary>
+        public Task<Message> WriteLineAndGetReplyAsync(byte[] data, TimeSpan timeout, CancellationToken cancellationToken = default(CancellationToken))
+        {
+            if (data == null)
+            {
+                throw new ArgumentNullException("data", "Os dados a transmitir devem ser informados.");
+            }
+
+            return WriteLineAndGetReplyInternoAsync(AdicionarDelimitador(data), timeout, cancellationToken);
+        }
+
+        private async Task<Message> WriteLineAndGetReplyInternoAsync(byte[] data, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            ValidarTimeout(timeout);
+
+            TcpClient client;
+            CancellationTokenSource cancellationTokenSource;
+            object writeLock;
+            lock (_stateLock)
+            {
+                ThrowIfDisposed();
+                client = _client;
+                cancellationTokenSource = _readCancellationTokenSource;
+                writeLock = _writeLock;
+            }
+
+            if (client == null || cancellationTokenSource == null || writeLock == null)
+            {
+                throw new InvalidOperationException("O cliente TCP não está conectado. Chame Connect antes de transmitir dados.");
+            }
+
+            Stopwatch cronometro = Stopwatch.StartNew();
+            bool semaphoreAdquirido = false;
+            bool requisicaoEnviada = false;
+            bool respostaRecebida = false;
+            TaskCompletionSource<bool> sessaoEncerrada = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationTokenSource cancelamentoEsperaSemaforo = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            EventHandler<Message> manipuladorResposta = null;
+            EventHandler<TcpClient> manipuladorSessaoEncerrada = null;
+
+            try
+            {
+                manipuladorSessaoEncerrada = (sender, sessao) =>
+                {
+                    if (ReferenceEquals(sessao, client))
+                    {
+                        sessaoEncerrada.TrySetResult(true);
+                        try
+                        {
+                            cancelamentoEsperaSemaforo.Cancel();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                        }
+                    }
+                };
+
+                SessaoEncerrada += manipuladorSessaoEncerrada;
+                if (!SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    semaphoreAdquirido = await _writeLineAndGetReplySemaphore.WaitAsync(timeout, cancelamentoEsperaSemaforo.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    return null;
+                }
+
+                if (!semaphoreAdquirido)
+                {
+                    return null;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+                {
+                    return null;
+                }
+
+                TaskCompletionSource<Message> resposta = new TaskCompletionSource<Message>(TaskCreationOptions.RunContinuationsAsynchronously);
+                manipuladorResposta = (sender, mensagem) => resposta.TrySetResult(mensagem);
+
+                DelimiterDataReceived += manipuladorResposta;
+
+                if (!SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+                {
+                    return null;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                TimeSpan tempoRestante = ObterTempoRestante(timeout, cronometro);
+                if (tempoRestante == TimeSpan.Zero)
+                {
+                    return null;
+                }
+
+                requisicaoEnviada = true;
+                Task envio = Task.Run(() => WriteToSession(client, writeLock, data));
+                ObservarFalhaEnvio(envio, client, cancellationTokenSource, writeLock);
+                Task atrasoCancelamentoEnvio = cancellationToken.CanBeCanceled ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken) : null;
+                Task atrasoTimeoutEnvio = timeout == Timeout.InfiniteTimeSpan ? null : Task.Delay(tempoRestante);
+                Task tarefaConcluidaEnvio = await AguardarPrimeiraTarefaAsync(envio, sessaoEncerrada.Task, atrasoTimeoutEnvio, atrasoCancelamentoEnvio).ConfigureAwait(false);
+
+                if (!ReferenceEquals(tarefaConcluidaEnvio, envio))
+                {
+                    if (ReferenceEquals(tarefaConcluidaEnvio, atrasoCancelamentoEnvio))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    return null;
+                }
+
+                await envio.ConfigureAwait(false);
+
+                tempoRestante = ObterTempoRestante(timeout, cronometro);
+                if (tempoRestante == TimeSpan.Zero)
+                {
+                    return null;
+                }
+
+                Task atrasoTimeout = timeout == Timeout.InfiniteTimeSpan ? null : Task.Delay(tempoRestante);
+                Task atrasoCancelamento = cancellationToken.CanBeCanceled ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken) : null;
+                Task tarefaConcluida = await AguardarPrimeiraTarefaAsync(resposta.Task, sessaoEncerrada.Task, atrasoTimeout, atrasoCancelamento).ConfigureAwait(false);
+
+                if (ReferenceEquals(tarefaConcluida, resposta.Task))
+                {
+                    respostaRecebida = true;
+                    return await resposta.Task.ConfigureAwait(false);
+                }
+
+                if (ReferenceEquals(tarefaConcluida, atrasoCancelamento))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                return null;
+            }
+            catch (InvalidOperationException) when (!SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+            {
+                return null;
+            }
+            finally
+            {
+                if (manipuladorResposta != null)
+                {
+                    DelimiterDataReceived -= manipuladorResposta;
+                }
+
+                if (manipuladorSessaoEncerrada != null)
+                {
+                    SessaoEncerrada -= manipuladorSessaoEncerrada;
+                }
+
+                if (requisicaoEnviada && !respostaRecebida && SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+                {
+                    EncerrarSessao(client, cancellationTokenSource);
+                }
+
+                cancelamentoEsperaSemaforo.Dispose();
+
+                if (semaphoreAdquirido)
+                {
+                    _writeLineAndGetReplySemaphore.Release();
+                }
+            }
         }
 
         private void WriteToSession(TcpClient client, object writeLock, byte[] data)
@@ -602,7 +802,108 @@ namespace FactorySI.SimpleTcp
             if (closeSession)
             {
                 CancelAndClose(client, cancellationTokenSource);
+                NotificarSessaoEncerrada(client);
             }
+        }
+
+        private static async Task<Task> AguardarPrimeiraTarefaAsync(Task resposta, Task sessaoEncerrada, Task atrasoTimeout, Task atrasoCancelamento)
+        {
+            List<Task> tarefas = new List<Task> { resposta, sessaoEncerrada };
+            if (atrasoTimeout != null)
+            {
+                tarefas.Add(atrasoTimeout);
+            }
+
+            if (atrasoCancelamento != null)
+            {
+                tarefas.Add(atrasoCancelamento);
+            }
+
+            return await Task.WhenAny(tarefas).ConfigureAwait(false);
+        }
+
+        private byte[] AdicionarDelimitador(byte[] data)
+        {
+            if (data.Length > 0 && data[data.Length - 1] == Delimiter)
+            {
+                return data;
+            }
+
+            byte[] dadosComDelimitador = new byte[data.Length + 1];
+            Array.Copy(data, dadosComDelimitador, data.Length);
+            dadosComDelimitador[dadosComDelimitador.Length - 1] = Delimiter;
+            return dadosComDelimitador;
+        }
+
+        private static void ValidarTimeout(TimeSpan timeout)
+        {
+            if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+            {
+                throw new ArgumentOutOfRangeException("timeout", "O tempo limite deve ser maior ou igual a zero, ou igual a Timeout.InfiniteTimeSpan.");
+            }
+
+            if (timeout > TimeSpan.FromMilliseconds(int.MaxValue))
+            {
+                throw new ArgumentOutOfRangeException("timeout", "O tempo limite não pode ser maior que Int32.MaxValue milissegundos no .NET Framework 4.6.2.");
+            }
+        }
+
+        private static TimeSpan ObterTempoRestante(TimeSpan timeout, Stopwatch cronometro)
+        {
+            if (timeout == Timeout.InfiniteTimeSpan)
+            {
+                return Timeout.InfiniteTimeSpan;
+            }
+
+            TimeSpan tempoRestante = timeout - cronometro.Elapsed;
+            return tempoRestante > TimeSpan.Zero ? tempoRestante : TimeSpan.Zero;
+        }
+
+        private bool SessaoEstaAtiva(TcpClient client, CancellationTokenSource cancellationTokenSource, object writeLock)
+        {
+            lock (_stateLock)
+            {
+                return ReferenceEquals(_client, client)
+                    && ReferenceEquals(_readCancellationTokenSource, cancellationTokenSource)
+                    && ReferenceEquals(_writeLock, writeLock);
+            }
+        }
+
+        private void NotificarSessaoEncerrada(TcpClient client)
+        {
+            EventHandler<TcpClient> handler = SessaoEncerrada;
+            if (handler == null)
+            {
+                return;
+            }
+
+            foreach (EventHandler<TcpClient> assinante in handler.GetInvocationList())
+            {
+                try
+                {
+                    assinante(this, client);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Falha ao notificar o encerramento da sessão TCP: " + ex);
+                }
+            }
+        }
+
+        private void ObservarFalhaEnvio(Task envio, TcpClient client, CancellationTokenSource cancellationTokenSource, object writeLock)
+        {
+            envio.ContinueWith(
+                tarefa =>
+                {
+                    AggregateException excecao = tarefa.Exception;
+                    if (excecao != null && SessaoEstaAtiva(client, cancellationTokenSource, writeLock))
+                    {
+                        Trace.TraceError("Falha inesperada ao enviar solicitação TCP: " + excecao);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private static void CancelAndClose(TcpClient client, CancellationTokenSource cancellationTokenSource)
@@ -699,6 +1000,7 @@ namespace FactorySI.SimpleTcp
             }
 
             CancelAndClose(client, cancellationTokenSource);
+            NotificarSessaoEncerrada(client);
             if (!ReferenceEquals(connectingClient, client))
             {
                 CloseClient(connectingClient);
